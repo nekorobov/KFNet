@@ -28,8 +28,8 @@ class SCoordNetDataSpec(DataSpec):
     def __init__(self,
                  batch_size,
                  downsample = 8,
-                 image_size=(480, 640),
-                 crop_size=(480, 640),
+                 image_size=(960, 536),
+                 crop_size=(960, 536),
                  mean=128,
                  scale=0.00625,
                  channels=3,
@@ -37,7 +37,7 @@ class SCoordNetDataSpec(DataSpec):
                  focal_y=525.,
                  u=320.,
                  v=240.,
-                 scene='fire'):
+                 scene='scene01'):
         super(SCoordNetDataSpec, self).__init__(batch_size=batch_size,
                                                input_size=(0, 0),
                                                mean=mean,

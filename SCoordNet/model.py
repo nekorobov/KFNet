@@ -1,7 +1,10 @@
+from __future__ import print_function
+
 import math
 from cnn_wrapper import helper, SCoordNet
 from loss import *
 from util import *
+import sys
 
 FLAGS = tf.app.flags.FLAGS
 
@@ -11,7 +14,7 @@ tf.app.flags.DEFINE_boolean('is_training', True, """Flag to training model""")
 tf.app.flags.DEFINE_boolean('debug', False, """Flag to debug""")
 tf.app.flags.DEFINE_boolean('show', False, """Flag to turn on visualization""")
 tf.app.flags.DEFINE_boolean('shuffle', False, """Flag to shuffle data""")
-tf.app.flags.DEFINE_integer('gpu', 0, """GPU id.""")
+tf.app.flags.DEFINE_list('devices', [0], """GPU ids.""")
 
 # Params for solver.
 tf.app.flags.DEFINE_float('base_lr', 0.0001, """Base learning rate.""")
@@ -35,7 +38,9 @@ tf.app.flags.DEFINE_string('scene', '', """Path to save the model.""")
 def get_transform(transform_file = None):
     if transform_file:
         transform = np.loadtxt(transform_file, dtype=np.float32)
+        print(transform)
         transform = np.linalg.inv(transform)
+        print(transform)
     else:
         transform = np.array([[1.0, 0.0, 0.0, 0.0],
                               [0.0, 1.0, 0.0, 0.0],
@@ -214,15 +219,18 @@ def get_training_data(image_list, label_list, spec):
                 index_queue = tf.train.string_input_producer(indexes, shuffle=True)
                 index = tf.string_to_number(index_queue.dequeue(), out_type=tf.int32)
                 image_path = tf.gather(image_paths, index)
+                
                 label_path = tf.gather(label_paths, index)
-                image = tf.image.decode_png(tf.read_file(image_path), channels=3)
-                image.set_shape((spec.image_size[0], spec.image_size[1], spec.channels))
+                image = tf.image.decode_jpeg(tf.read_file(image_path), channels=3)
                 image = tf.cast(image, tf.float32)
-
-                label_shape = [spec.image_size[0], spec.image_size[1], 4]
+                image = tf.squeeze(tf.image.crop_and_resize([image], [[0, 0, 1, spec.image_size[1] / (spec.image_size[1] + 4.)]], [0], (spec.image_size[0], spec.image_size[1])))
+                image.set_shape((spec.image_size[0], spec.image_size[1], spec.channels))
+                
+                label_shape = [spec.image_size[0] // spec.downsample, spec.image_size[1] // spec.downsample, 4]
                 coord_map = tf.reshape(tf.decode_raw(tf.read_file(label_path), tf.float32), label_shape)
+                coord_map = tf.squeeze(tf.image.resize_nearest_neighbor([coord_map], [spec.image_size[0], spec.image_size[1]]))
 
-            with tf.device('/device:GPU:%d' % FLAGS.gpu):
+            with tf.device('/device:GPU:%d' % int(FLAGS.devices[0])):
                 crop_images = []
                 crop_coord_maps = []
                 indexes = []
@@ -236,14 +244,16 @@ def get_training_data(image_list, label_list, spec):
                 batch_crop_coord_map = tf.stack(crop_coord_maps, 0)
                 batch_index = tf.stack(indexes)
 
+
             with tf.device('/device:CPU:0'):
                 return tf.train.shuffle_batch(
                     [batch_crop_image, batch_crop_coord_map, batch_index],
                     batch_size=spec.batch_size,
+                    enqueue_many=True,
                     capacity=spec.batch_size * 4,
                     min_after_dequeue=spec.batch_size * 2,
-                    enqueue_many=True,
                     num_threads=40)
+
 
     image_paths = read_lines(image_list)
     label_paths = read_lines(label_list)
@@ -260,7 +270,9 @@ def run_training(image_list, label_list, transform_file, is_training=True):
         get_training_data(image_list, label_list, spec)
     # BxHxWx3, BxHxWx4, BxHxWx2, Bx12
 
-    with tf.device('/device:GPU:%d' % FLAGS.gpu):
+    #mirrored_strategy = tf.distribute.MirroredStrategy(devices=["/device:GPU:{}".format(int(d)) for d in FLAGS.devices])
+    #with mirrored_strategy.scope():
+    with tf.device('/device:GPU:%d' % int(FLAGS.devices[0])):
 
         with tf.variable_scope("ScoreNet"):
             scoordnet = SCoordNet({'input': batch_images},
@@ -271,9 +283,9 @@ def run_training(image_list, label_list, transform_file, is_training=True):
             gt_coords = tf.slice(batch_labels, [0, 0, 0, 0], [-1, -1, -1, 3], name='gt_coords') # BxHxWx3
             mask = tf.slice(batch_labels, [0, 0, 0, 3], [-1, -1, -1, 1], name='mask') # BxHxWx1
             # resize
-            batch_images = tf.image.resize_bilinear(batch_images, [spec.crop_size[0] // spec.downsample, spec.crop_size[1] // spec.downsample])
-            gt_coords = tf.image.resize_nearest_neighbor(gt_coords, [spec.crop_size[0] // spec.downsample, spec.crop_size[1] // spec.downsample])
-            mask = tf.image.resize_nearest_neighbor(mask, [spec.crop_size[0] // spec.downsample, spec.crop_size[1] // spec.downsample])
+            batch_images = tf.image.resize_bilinear(batch_images, [int(spec.crop_size[0] // spec.downsample), int(spec.crop_size[1] // spec.downsample)])
+            gt_coords = tf.image.resize_nearest_neighbor(gt_coords, [int(spec.crop_size[0] // spec.downsample), int(spec.crop_size[1] // spec.downsample)])
+            mask = tf.image.resize_nearest_neighbor(mask, [int(spec.crop_size[0] // spec.downsample), int(spec.crop_size[1] // spec.downsample)])
             mask = tf.cast((mask >= 1.0), tf.float32)
 
             # coordinate loss
@@ -298,6 +310,10 @@ def run_training(image_list, label_list, transform_file, is_training=True):
             with tf.device('/device:CPU:0'):
                 tf.summary.scalar('mean_coord_error(cm)', mean_coord_error * 100)
                 tf.summary.scalar('accuracy', accuracy)
+                tf.summary.image("GT coords", gt_coords, max_outputs=4)
+                tf.summary.image("Pred coords", coord_map, max_outputs=4)
+                tf.summary.image("Image", batch_images, max_outputs=4)
+                tf.summary.image("Confidence", uncertainty_map, max_outputs=4)
 
     return loss, coord_loss, smooth_loss, accuracy, batch_index
 
@@ -311,7 +327,7 @@ def get_testing_data(indexes, image_list, label_list, spec):
             index = tf.string_to_number(index_queue.dequeue(), out_type=tf.int32)
             image_path = tf.gather(image_paths, index)
             label_path = tf.gather(label_paths, index)
-            image = tf.image.decode_png(tf.read_file(image_path), channels=3)
+            image = tf.image.decode_jpeg(tf.read_file(image_path), channels=3)
             image.set_shape((spec.image_size[0], spec.image_size[1], spec.channels))
             image = tf.cast(image, tf.float32)
             label_shape = [spec.image_size[0], spec.image_size[1], 4]

@@ -4,6 +4,8 @@ from model import run_testing, get_indexes, read_lines, FLAGS
 from tools.io import get_snapshot
 from tensorflow.python import debug as tf_debug
 from cnn_wrapper import helper, SCoordNet
+import matplotlib
+matplotlib.use("agg")
 import matplotlib.pyplot as plt
 from util import *
 

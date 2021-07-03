@@ -6,33 +6,53 @@ from tools.io import get_snapshot, get_num_trainable_params
 from tensorflow.python import debug as tf_debug
 from cnn_wrapper import helper, SCoordNet
 from datetime import datetime
+import yaml
 
 def set_stepvalue():
-    if FLAGS.scene == 'chess':
+    if FLAGS.scene == 'scene01':
         FLAGS.stepvalue = 100000
         FLAGS.max_steps = FLAGS.stepvalue * 5
-    elif FLAGS.scene == 'fire':
+    elif FLAGS.scene == 'scene02':
         FLAGS.stepvalue = 30000
         FLAGS.max_steps = FLAGS.stepvalue * 5
-    elif FLAGS.scene == 'heads':
+    elif FLAGS.scene == 'scene03':
         FLAGS.stepvalue = 60000
         FLAGS.max_steps = FLAGS.stepvalue * 5
-    elif FLAGS.scene == 'office':
+    elif FLAGS.scene == 'scene04':
         FLAGS.stepvalue = 100000
         FLAGS.max_steps = FLAGS.stepvalue * 5
-    elif FLAGS.scene == 'pumpkin':
+    elif FLAGS.scene == 'scene05':
         FLAGS.stepvalue = 100000
         FLAGS.max_steps = FLAGS.stepvalue * 5
-    elif FLAGS.scene == 'redkitchen':
+    elif FLAGS.scene == 'scene06':
         FLAGS.stepvalue = 100000
         FLAGS.max_steps = FLAGS.stepvalue * 5
-    elif FLAGS.scene == 'stairs':
+    elif FLAGS.scene == 'scene07':
+        FLAGS.stepvalue = 100000
+        FLAGS.max_steps = FLAGS.stepvalue * 5
+    elif FLAGS.scene == 'scene08':
+        FLAGS.stepvalue = 100000
+        FLAGS.max_steps = FLAGS.stepvalue * 5
+    elif FLAGS.scene == 'scene09':
+        FLAGS.stepvalue = 100000
+        FLAGS.max_steps = FLAGS.stepvalue * 5
+    elif FLAGS.scene == 'scene10':
         FLAGS.stepvalue = 100000
         FLAGS.max_steps = FLAGS.stepvalue * 5
     else:
         print 'Invalid scene:', FLAGS.scene
         exit()
 
+
+def load_intrinsics(path_to_cam_file, spec):
+    with open(path_to_cam_file, 'r') as stream:
+        data_loaded = yaml.safe_load(stream)["camera_intrinsics"]
+
+    spec.focal_x = data_loaded["model"][0]
+    spec.focal_y = data_loaded["model"][1]
+    spec.u = data_loaded["model"][2]
+    spec.v = data_loaded["model"][3]
+    return spec
 
 
 def solver(loss):
@@ -60,7 +80,7 @@ def solver(loss):
             loss + reg_loss, global_step=global_step)
     return opt, lr_op, reg_loss
 
-def train(image_list, label_list, transform_file, out_dir, \
+def train(image_list, label_list, transform_file, camera_file, out_dir, \
           snapshot=None, init_step=0, debug=False):
 
     print image_list
@@ -71,6 +91,8 @@ def train(image_list, label_list, transform_file, out_dir, \
     spec = helper.get_data_spec(model_class=SCoordNet)
     spec.scene = FLAGS.scene
     set_stepvalue()
+
+    spec = load_intrinsics(camera_file, spec)
 
     print "--------------------------------"
     print "scene:", spec.scene
@@ -85,7 +107,9 @@ def train(image_list, label_list, transform_file, out_dir, \
 
     print '# trainable parameters: ', get_num_trainable_params()
 
-    with tf.device('/device:GPU:%d' % FLAGS.gpu):
+    #mirrored_strategy = tf.distribute.MirroredStrategy(devices=["/device:GPU:{}".format(int(d)) for d in FLAGS.devices])
+    #with mirrored_strategy.scope():
+    with tf.device('/device:GPU:%d' % int(FLAGS.devices[0])):
         optimizer, lr_op, reg_loss = solver(loss)
         init_op = tf.global_variables_initializer()
 
@@ -153,8 +177,9 @@ def main(_):
     image_list = os.path.join(FLAGS.input_folder, 'image_list.txt')
     label_list = os.path.join(FLAGS.input_folder, 'label_list.txt')
     transform_file = os.path.join(FLAGS.input_folder, 'transform.txt')
+    camera_file = os.path.join(FLAGS.input_folder, 'camera.yaml')
 
-    train(image_list, label_list, transform_file, FLAGS.model_folder,
+    train(image_list, label_list, transform_file, camera_file,  FLAGS.model_folder,
           snapshot, step, FLAGS.debug)
 
 
