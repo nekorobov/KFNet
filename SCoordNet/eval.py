@@ -8,6 +8,7 @@ import matplotlib
 matplotlib.use("agg")
 import matplotlib.pyplot as plt
 from util import *
+import yaml
 
 def dist_error(coords, gt_coords, mask):
     """
@@ -31,7 +32,17 @@ def median_uncertainty(uncertainty, mask):
     data_array = filter(lambda x: x > 0, data_array)
     return np.median(data_array) * 100.0
 
-def eval(image_list, label_list, transform_file, output_folder, snapshot, debug=False):
+def load_intrinsics(path_to_cam_file, spec):
+    with open(path_to_cam_file, 'r') as stream:
+        data_loaded = yaml.safe_load(stream)["camera_intrinsics"]
+
+    spec.focal_x = data_loaded["model"][0]
+    spec.focal_y = data_loaded["model"][1]
+    spec.u = data_loaded["model"][2]
+    spec.v = data_loaded["model"][3]
+    return spec
+
+def eval(image_list, label_list, transform_file, camera_file, output_folder, snapshot, debug=False):
     print image_list
     print label_list
 
@@ -41,6 +52,8 @@ def eval(image_list, label_list, transform_file, output_folder, snapshot, debug=
     spec = helper.get_data_spec(model_class=SCoordNet)
     spec.batch_size = 1
     spec.scene = FLAGS.scene
+    spec = load_intrinsics(camera_file, spec)
+
     if FLAGS.scene == 'GreatCourt' or FLAGS.scene == 'KingsCollege' or \
         FLAGS.scene == 'OldHospital' or FLAGS.scene == 'ShopFacade' or \
         FLAGS.scene == 'StMarysChurch' or FLAGS.scene == 'Street' or \
@@ -129,7 +142,8 @@ def eval(image_list, label_list, transform_file, output_folder, snapshot, debug=
                     dist_map = plt.imshow(euc_diff_coords)
                     fig1.colorbar(dist_map)
 
-                    plt.show()
+                    #plt.show()
+                    plt.savefig("/home/n.korobov/thesis/KFNet/images/" + str(i) + '_' + str(b) + '.png', bbox_inches='tight')
                     plt.close(fig1)
 
         print 'Median dist error', np.median(dists)
@@ -148,8 +162,9 @@ def main(_):
     image_list = os.path.join(FLAGS.input_folder, 'image_list.txt')
     label_list = os.path.join(FLAGS.input_folder, 'label_list.txt')
     transform_file = os.path.join(FLAGS.input_folder, 'transform.txt')
-
-    eval(image_list, label_list, transform_file, FLAGS.output_folder, snapshot, FLAGS.debug)
+    camera_file = os.path.join(FLAGS.input_folder, 'camera.yaml')
+    
+    eval(image_list, label_list, transform_file, camera_file, FLAGS.output_folder, snapshot, FLAGS.debug)
 
 if __name__ == '__main__':
     tf.app.run()

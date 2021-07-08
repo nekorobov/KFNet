@@ -29,6 +29,7 @@ tf.app.flags.DEFINE_float('momentum', 0.9, """momentum in when using SGD with mo
 tf.app.flags.DEFINE_integer('reset_step', -1, """Reset step.""")
 
 # Params for I/O
+tf.app.flags.DEFINE_string('input_folder_eval', '', """Path to eval data.""")
 tf.app.flags.DEFINE_string('input_folder', '', """Path to data.""")
 tf.app.flags.DEFINE_string('model_folder', '', """Path to model.""")
 tf.app.flags.DEFINE_string('finetune_folder', '', """Path to model from which we fine-tune it.""")
@@ -223,7 +224,7 @@ def get_training_data(image_list, label_list, spec):
                 label_path = tf.gather(label_paths, index)
                 image = tf.image.decode_jpeg(tf.read_file(image_path), channels=3)
                 image = tf.cast(image, tf.float32)
-                image = tf.squeeze(tf.image.crop_and_resize([image], [[0, 0, 1, spec.image_size[1] / (spec.image_size[1] + 4.)]], [0], (spec.image_size[0], spec.image_size[1])))
+                image = tf.squeeze(tf.image.crop_and_resize([image], [[0, 0, 1, spec.image_size[1] / (spec.image_size[1]+12.)]], [0], (spec.image_size[0], spec.image_size[1])))
                 image.set_shape((spec.image_size[0], spec.image_size[1], spec.channels))
                 
                 label_shape = [spec.image_size[0] // spec.downsample, spec.image_size[1] // spec.downsample, 4]
@@ -310,12 +311,12 @@ def run_training(image_list, label_list, transform_file, is_training=True):
             with tf.device('/device:CPU:0'):
                 tf.summary.scalar('mean_coord_error(cm)', mean_coord_error * 100)
                 tf.summary.scalar('accuracy', accuracy)
-                tf.summary.image("GT coords", gt_coords, max_outputs=4)
-                tf.summary.image("Pred coords", coord_map, max_outputs=4)
-                tf.summary.image("Image", batch_images, max_outputs=4)
-                tf.summary.image("Confidence", uncertainty_map, max_outputs=4)
+                tf.summary.image("GT coords", gt_coords, max_outputs=2)
+                tf.summary.image("Pred coords", coord_map, max_outputs=2)
+                tf.summary.image("Image", batch_images, max_outputs=2)
+                tf.summary.image("Confidence", uncertainty_map, max_outputs=2)
 
-    return loss, coord_loss, smooth_loss, accuracy, batch_index
+    return scoordnet, loss, coord_loss, smooth_loss, accuracy, batch_index
 
 
 def get_testing_data(indexes, image_list, label_list, spec):
@@ -328,11 +329,14 @@ def get_testing_data(indexes, image_list, label_list, spec):
             image_path = tf.gather(image_paths, index)
             label_path = tf.gather(label_paths, index)
             image = tf.image.decode_jpeg(tf.read_file(image_path), channels=3)
-            image.set_shape((spec.image_size[0], spec.image_size[1], spec.channels))
+            image = tf.squeeze(tf.image.crop_and_resize([image], [[0, 0, 1, spec.image_size[1] / (spec.image_size[1]+12.)]], [0], (spec.crop_size[0], spec.crop_size[1])))
+            image.set_shape((spec.crop_size[0], spec.crop_size[1], spec.channels))
             image = tf.cast(image, tf.float32)
-            label_shape = [spec.image_size[0], spec.image_size[1], 4]
+            
+            label_shape = [spec.image_size[0] // spec.downsample, spec.image_size[1] // spec.downsample, 4]
             coord_map = tf.reshape(tf.decode_raw(tf.read_file(label_path), tf.float32), label_shape)
-
+            #coord_map.set_shape((spec.image_size[0], spec.image_size[1], spec.channels))
+            coord_map = tf.squeeze(tf.image.resize_nearest_neighbor([coord_map], [spec.crop_size[0], spec.crop_size[1]]))
             # image, coord_map, pixel_map = random_crop_augmentation(image, coord_map, pixel_map, spec)
             # offset = 0
             # image = tf.image.crop_to_bounding_box(image, offset, offset, spec.crop_size[0], spec.crop_size[1])
@@ -350,14 +354,15 @@ def get_testing_data(indexes, image_list, label_list, spec):
     indexes = [str(i) for i in indexes]
     return _testing_data_queue(indexes, image_paths, label_paths, spec)
 
-def run_testing(indexes, image_list, label_list, transform_file, spec, is_training=False):
+def run_testing(indexes, image_list, label_list, transform_file, spec, scoordnet=None, is_training=False):
 
     batch_images, batch_labels, indexes = get_testing_data(indexes, image_list, label_list, spec)
 
-    with tf.variable_scope("ScoreNet"):
-        scoordnet = SCoordNet({'input': batch_images},
-                             is_training=is_training,
-                             reuse=False)# BxHxWx4
+    if scoordnet == None:
+        with tf.variable_scope("ScoreNet"):
+            scoordnet = SCoordNet({'input': batch_images},
+                                is_training=is_training,
+                                reuse=False)# BxHxWx4
 
     with tf.name_scope('loss'):
         gt_coords = tf.slice(batch_labels, [0, 0, 0, 0], [-1, -1, -1, 3], name='gt_coords')  # BxHxWx3

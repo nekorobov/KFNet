@@ -1,19 +1,21 @@
 import sys, os, time
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 import tensorflow as tf
-from model import run_training, FLAGS
+from model import run_training, run_testing, FLAGS
 from tools.io import get_snapshot, get_num_trainable_params
 from tensorflow.python import debug as tf_debug
 from cnn_wrapper import helper, SCoordNet
 from datetime import datetime
 import yaml
+import numpy as np
+from eval import dist_error, read_lines, get_indexes, median_uncertainty
 
 def set_stepvalue():
     if FLAGS.scene == 'scene01':
         FLAGS.stepvalue = 100000
         FLAGS.max_steps = FLAGS.stepvalue * 5
     elif FLAGS.scene == 'scene02':
-        FLAGS.stepvalue = 30000
+        FLAGS.stepvalue = 100000
         FLAGS.max_steps = FLAGS.stepvalue * 5
     elif FLAGS.scene == 'scene03':
         FLAGS.stepvalue = 60000
@@ -80,7 +82,53 @@ def solver(loss):
             loss + reg_loss, global_step=global_step)
     return opt, lr_op, reg_loss
 
-def train(image_list, label_list, transform_file, camera_file, out_dir, \
+def run_eval(sess, writer, scoordnet, spec, step, indexes, images, coords, uncertainty, gt_coords, mask, image_indexes):
+    loop_num = len(indexes) / spec.batch_size
+    coeffs = []
+    dists = []
+    median_uncertainties = []
+    accuracies = []
+
+    for i in range(loop_num):
+        batch_images, batch_coords, batch_uncertainty, batch_gt_coords, batch_mask, batch_image_indexes = \
+            sess.run([images, coords, uncertainty, gt_coords, mask, image_indexes])
+
+        for b in range(spec.batch_size):
+            id = i * spec.batch_size + b
+            index = indexes[id]
+
+            out_images = batch_images[b, :, :, :]
+            out_uncertainty = batch_uncertainty[b, :, :, :]
+            out_mask = batch_mask[b, :, :, :]
+            out_coords = batch_coords[b, :, :, :]
+            out_gt_coords = batch_gt_coords[b, :, :, :]
+            out_weights = 1.0 / out_uncertainty
+            out_image_index = batch_image_indexes[b]
+
+            median_dist, euc_diff_coords, accuracy = dist_error(out_coords, out_gt_coords, out_mask)
+            dists.append(median_dist)
+            med_uncertainty = median_uncertainty(out_uncertainty, out_mask)
+            median_uncertainties.append(med_uncertainty)
+            accuracies.append(accuracy)
+
+            print index, out_image_index, ', median dist:', median_dist, \
+                ', median uncertainty:', med_uncertainty, \
+                ', accuracy:', accuracy
+
+    def write_summary(tag, value):
+        summary = tf.Summary(value=[
+                tf.Summary.Value(tag=tag, simple_value=value), 
+                ])
+        writer.add_summary(summary=summary, global_step=step)
+       
+    write_summary('median_coord_error(cm)', np.median(dists))
+    write_summary('mean_coord_error(cm)', np.mean(dists))
+    write_summary('stddev_coord_error(cm)', np.std(dists))
+    write_summary('median_uncertainty', np.median(median_uncertainties))
+    write_summary('mean_accuracy', np.mean(accuracies))
+
+
+def train(image_list, label_list, transform_file, camera_file, image_list_eval, label_list_eval, out_dir, \
           snapshot=None, init_step=0, debug=False):
 
     print image_list
@@ -103,7 +151,15 @@ def train(image_list, label_list, transform_file, camera_file, out_dir, \
 
     raw_input("Please check the meta info, press any key to continue...")
 
-    loss, coord_loss, smooth_loss, accuracy, batch_indexes = run_training(image_list, label_list, transform_file)
+    scoordnet, loss, coord_loss, smooth_loss, accuracy, batch_indexes = run_training(image_list, label_list, transform_file)
+
+    image_paths_eval = read_lines(image_list_eval)
+    image_num_eval = len(image_paths_eval)
+
+    indexes_eval = get_indexes(image_num_eval)
+    
+    _, images_eval, coords_eval, uncertainty_eval, gt_coords_eval, mask_eval, image_indexes_eval = \
+        run_testing(indexes_eval, image_list_eval, label_list_eval, transform_file, spec, scoordnet=scoordnet)
 
     print '# trainable parameters: ', get_num_trainable_params()
 
@@ -162,6 +218,9 @@ def train(image_list, label_list, transform_file, camera_file, out_dir, \
             if step % FLAGS.snapshot == 0 or step == FLAGS.max_steps:
                 checkpoint_path = os.path.join(out_dir, 'model.ckpt')
                 saver.save(sess, checkpoint_path, global_step=step)
+
+            if step % 1000 == 0:
+                run_eval(sess, summary_writer, scoordnet, spec, step, indexes_eval, images_eval, coords_eval, uncertainty_eval, gt_coords_eval, mask_eval, image_indexes_eval)
             step += 1
 
         coord.request_stop()
@@ -179,7 +238,10 @@ def main(_):
     transform_file = os.path.join(FLAGS.input_folder, 'transform.txt')
     camera_file = os.path.join(FLAGS.input_folder, 'camera.yaml')
 
-    train(image_list, label_list, transform_file, camera_file,  FLAGS.model_folder,
+    image_list_eval = os.path.join(FLAGS.input_folder_eval, 'image_list.txt')
+    label_list_eval = os.path.join(FLAGS.input_folder_eval, 'label_list.txt')
+
+    train(image_list, label_list, transform_file, camera_file, image_list_eval, label_list_eval, FLAGS.model_folder,
           snapshot, step, FLAGS.debug)
 
 
